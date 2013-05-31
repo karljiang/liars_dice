@@ -7,19 +7,47 @@ import os
 
 GAME_CLOCK = 10
 SAVE_FILE = 'bots.dat'
+START_DICE = 5
+DICE_SIDES = 6
 
 class Game:
     def __init__(self, player0, player1):
-        self.cup0 = [ random.randint(1,6) for i in range(5) ]
-        self.cup1 = [ random.randint(1,6) for i in range(5) ]
+        self.dice0 = START_DICE
+        self.dice1 = START_DICE
+        self.player0 = player0
+        self.player1 = player1
+        self.time0 = GAME_CLOCK
+        self.time1 = GAME_CLOCK
+        self.initialize()
+        self.waiting_on = set()
+
+    def initialize(self):
+        self.cup0 = [ random.randint(1,DICE_SIDES) for i in range(self.dice0) ]
+        self.cup1 = [ random.randint(1,DICE_SIDES) for i in range(self.dice1) ]
         self.history = []
         self.turn = random.randint(0,1)
         self.ones_valid = True
-        self.player0 = player0
-        self.player1 = player1
         self.last_time = time.time()
-        self.time0 = GAME_CLOCK
-        self.time1 = GAME_CLOCK
+
+    def reinit(self, winner):
+        if winner == self.player0:
+            self.dice1 -= 1
+            if self.dice1 == 0:
+                return True
+        else:
+            self.dice0 -= 1
+            if self.dice0 == 0:
+                return True
+
+        self.waiting_on = set([self.player0, self.player1])
+        self.initialize()
+        return False
+
+    def current_player(self):
+        if self.turn == 0:
+            return self.player0
+        else:
+            return self.player1
 
     def play_valid(self, k, n):
         last_play = [0, 0] if not self.history else self.history[-1]
@@ -28,7 +56,7 @@ class Game:
             return False
         if k == last_play[0] and n > last_play[1]:
             return True
-        if k > last_play[1]:
+        if k > last_play[0]:
             return True
         return False
 
@@ -99,25 +127,29 @@ class Server:
         self.socket.send("", zmq.SNDMORE)
         self.socket.send(msg)
 
-    def send_player0(self, game, winner):
+    def send_player0(self, game, winner, done=False):
         msg = json.dumps({"dice": game.cup0,
                           "history": game.history,
                           "ones_valid": game.ones_valid,
                           "winner": winner,
+                          "game_complete": done,
                           "opponent": self.bots[game.player1],
+                          "oppenent_dice_num": game.dice1,
                           "opponent_dice": game.cup1 if winner else None})
         self.send(game.player0, msg)
 
-    def send_player1(self, game, winner):
+    def send_player1(self, game, winner, done=False):
         msg = json.dumps({"dice": game.cup1,
                           "history": game.history,
                           "ones_valid": game.ones_valid,
                           "winner": winner,
+                          "game_complete": done,
                           "opponent": self.bots[game.player0],
+                          "oppenent_dice_num": game.dice0,
                           "opponent_dice": game.cup0 if winner else None})
         self.send(game.player1, msg)
 
-    def send_game(self, game, winner=None):
+    def send_game(self, game, winner=None, done=False):
         if game.turn == 0:
             self.send_player0(game, winner)
         else:
@@ -133,11 +165,12 @@ class Server:
                 continue
             winner = game.check_expired()
             if winner is not None:
-                self.update_ratings(game, winner)
                 if winner == game.player0:
-                    self.send_player0(game, winner=self.bots[winner])
+                    self.send_player0(game, winner=self.bots[winner], done=True)
                 if winner == game.player1:
-                    self.send_player1(game, winner=self.bots[winner])
+                    self.send_player1(game, winner=self.bots[winner], done=True)
+
+                self.update_ratings(game, winner)
                 del self.active_games[game.player0]
                 del self.active_games[game.player1]
 
@@ -196,10 +229,25 @@ class Server:
                 self.waiting_bot = bot_id
             else:
                 game = Game(self.waiting_bot, bot_id)
+                print "starting game between %s and %s!" % (self.bots[self.waiting_bot], self.bots[bot_id])
                 self.active_games[self.waiting_bot] = game
                 self.active_games[bot_id] = game
                 self.waiting_bot = None
                 self.send_game(game)
+        elif msg == 'next':
+            if bot_id not in self.active_games.keys():
+                self.send_warn(bot_id, "your bot is not currently in a game, or it has completed")
+                return
+
+            game = self.active_games[bot_id]
+            if bot_id not in game.waiting_on:
+                self.send_warn(bot_id, "you have already registered for the next round, please by patient as the other bot joins")
+                return
+
+            game.waiting_on.remove(bot_id)
+            if not game.waiting_on:
+                self.send_game(game)
+
         elif msg == 'ping':
             self.send(bot_id, "pong")
         else:
@@ -212,17 +260,27 @@ class Server:
                 self.send_warn(bot_id, "values sent must be non-negative integers")
             else:
                 game = self.active_games[bot_id]
+                if game.current_player() != bot_id:
+                    self.send_warn(bot_id, "it is not currently your turn to play")
+                    return
+                
                 ret = game.play(int(nums[0]), int(nums[1]))
                 if ret == -1:
                     self.send_warn(bot_id, "%s: that move is illegal" % msg)
                 elif ret is None:
+                    print "[%s] -> bids %s %ss" % (self.bots[bot_id], nums[0], nums[1])
                     self.send_game(game)
                 else:
-                    self.update_ratings(game, ret)
-                    self.send_player0(game, winner=self.bots[ret])
-                    self.send_player1(game, winner=self.bots[ret])
-                    del self.active_games[game.player0]
-                    del self.active_games[game.player1]
+                    print "[%s] -> bullshit!" % self.bots[bot_id]
+                    done = game.reinit(ret)
+                    print "%s wins the round!" % self.bots[ret]
+                    self.send_player0(game, winner=self.bots[ret], done=done)
+                    self.send_player1(game, winner=self.bots[ret], done=done)
+                    if done:
+                        print "%s wins the game!" % self.bots[ret]
+                        self.update_ratings(game, ret)
+                        del self.active_games[game.player0]
+                        del self.active_games[game.player1]
 
 server = Server()
 while True:
