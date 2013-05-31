@@ -191,6 +191,13 @@ class Server:
                 [name, uuid, mu, sigma] = line.split(',')
                 self.init_bot(name, uuid, trueskill.Rating(float(mu), float(sigma)))
 
+    def save_ratings(self):
+        with open(SAVE_FILE, 'w') as f:
+            for bot_id in self.ratings.keys():
+                rating = self.ratings[bot_id]
+                name = self.bots[bot_id]
+                f.write("%s,%s,%s,%s\n" % (name, bot_id, rating.mu, rating.sigma))
+
     def update_ratings(self, game, winner):
         if game.player0 == winner:
             loser = game.player1
@@ -199,12 +206,7 @@ class Server:
 
         self.ratings[winner], self.ratings[loser] = trueskill.rate_1vs1(self.ratings[winner],
                                                                         self.ratings[loser])
-
-        with open(SAVE_FILE, 'w') as f:
-            for bot_id in self.ratings.keys():
-                rating = self.ratings[bot_id]
-                name = self.bots[bot_id]
-                f.write("%s,%s,%s,%s\n" % (name, bot_id, rating.mu, rating.sigma))
+        self.save_ratings()
         
     def run(self):
         self.scan_games()
@@ -219,6 +221,7 @@ class Server:
                 uuid = random.getrandbits(31)
                 print "registering bot %s -> %s" % (bot_id, uuid)
                 self.init_bot(bot_id, uuid)
+                self.save_ratings()
                 self.send(bot_id, str(uuid))
         elif msg == 'start':
             if bot_id not in self.bots.keys():
@@ -260,7 +263,7 @@ class Server:
                 self.send_warn(bot_id, "values sent must be non-negative integers")
             else:
                 game = self.active_games[bot_id]
-                if game.current_player() != bot_id:
+                if game.current_player() != bot_id or game.waiting_on:
                     self.send_warn(bot_id, "it is not currently your turn to play")
                     return
                 
