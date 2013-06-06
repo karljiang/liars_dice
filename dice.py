@@ -134,7 +134,7 @@ class Server:
                           "winner": winner,
                           "game_complete": done,
                           "opponent": self.bots[game.player1],
-                          "oppenent_dice_num": game.dice1,
+                          "opponent_dice_num": game.dice1,
                           "opponent_dice": game.cup1 if winner else None})
         self.send(game.player0, msg)
 
@@ -145,7 +145,7 @@ class Server:
                           "winner": winner,
                           "game_complete": done,
                           "opponent": self.bots[game.player0],
-                          "oppenent_dice_num": game.dice0,
+                          "opponent_dice_num": game.dice0,
                           "opponent_dice": game.cup0 if winner else None})
         self.send(game.player1, msg)
 
